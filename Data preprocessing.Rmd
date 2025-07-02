@@ -1,0 +1,1125 @@
+---
+title: "Machine Learning-Based Prediction of Airline Passenger Satisfaction"
+author: "Baran KILINC"
+date: "2025-06-12"
+output: pdf_document
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+## 1. Introduction and Aim of The Project
+
+   Passengers in an airline company fill out a survey after each flight where they evaluate the services provided. According to the scores of these services and passenger services, the aim of this study is to develop a predictive model that can determine whether a future passenger is likely to be satisfied with their flight experience overall. Passenger satisfaction is categorized into two classes: "Satisfied" and "Neutral or Dissatisfied." Therefore, the problem is formulated as a binary classification task.
+   The project aims to identify key factors affecting passenger satisfaction, develop customer experience strategies and improve decision-making processes within airline operations by applying machine learning techniques.
+   
+## 2. Source of The Data and Variables
+   
+   The dataset obtained from Kaggle, an open-source data platform, is multidimensional and focuses on various factors influencing airline passenger satisfaction, including service quality, flight experience, and passenger demographics. It consists of approximately 104,000 rows and 24 columns. Here, there are values that include passenger information such as the passenger's gender, age, loyalty or personal or business travel. At the same time, most of the remaining columns show the services provided and the points given to them. The score scale is between 0 and 5, 0 indicates that the service is not applied, and 1 to 5 indicates satisfaction levels. The variables and definitions of the data are as follows:
+
+Gender: Gender of the passengers (Female, Male)
+
+Customer Type: The customer type (Loyal customer, disloyal customer)
+
+Age: The actual age of the passengers
+
+Type of Travel: Purpose of the flight of the passengers (Personal Travel, Business Travel)
+
+Class: Travel class in the plane of the passengers (Business, Eco, Eco Plus)
+
+Flight distance: The flight distance of this journey
+
+Inflight wifi service: Satisfaction level of the inflight wifi service (0:Not Applicable;1-5)
+
+Departure/Arrival time convenient: Satisfaction level of Departure/Arrival time convenient
+
+Ease of Online booking: Satisfaction level of online booking
+
+Gate location: Satisfaction level of Gate location
+
+Food and drink: Satisfaction level of Food and drink
+
+Online boarding: Satisfaction level of online boarding
+
+Seat comfort: Satisfaction level of Seat comfort
+
+Inflight entertainment: Satisfaction level of inflight entertainment
+
+On-board service: Satisfaction level of On-board service
+
+Leg room service: Satisfaction level of Leg room service
+
+Baggage handling: Satisfaction level of baggage handling
+
+Check-in service: Satisfaction level of Check-in service
+
+Inflight service: Satisfaction level of inflight service
+
+Cleanliness: Satisfaction level of Cleanliness
+
+Departure Delay in Minutes: Minutes delayed when departure
+
+Arrival Delay in Minutes: Minutes delayed when Arrival
+
+Satisfaction: Airline satisfaction level(Satisfaction, neutral or dissatisfaction)
+
+
+
+```{r}
+#412 project Baran KILINC
+
+library(tidyverse)
+library(ggplot2)
+library(kableExtra)
+library(corrplot)
+library(Amelia)
+library(caret)
+library(MissMech)
+library(mice)
+library(ggcorrplot)
+library(MVN)
+library(dbscan)
+library(fastDummies)
+library(nortest)
+library(e1071)
+library(car)
+library(caret)
+library(tibble)
+library(gt)
+library(dplyr)
+library(reshape2)
+library(knitr)
+library(kableExtra)
+
+airline <- read.csv("Airline_Passenger_Satisfaction.csv", header = TRUE)
+
+sum(is.na(airline))
+colSums(is.na(airline))
+sum(duplicated(airline))
+```
+
+There are 5,180 rows in the dataset that are missing information in all columns; these rows are most likely completely empty. Also, no duplicate records were found. It would be appropriate to clean up these missing rows before moving on to analysis.
+
+
+```{r}
+str(airline)
+airline$id <- NULL
+```
+
+I dropped meaningless columns like customer id.
+
+
+```{r}
+airline <- airline %>% 
+  mutate(across(where(is.character), as.factor))
+```
+
+I turned categorical variables to factor.
+
+
+```{r}
+str(airline)
+```
+
+All of the variables are correctly defined now. As the next step,   the summary statistics can be checked to see if there are any corruptions in  levels of the factor variables, or any wrong inputs in numeric data.
+
+
+
+```{r}
+summary(airline)
+```
+
+```{r}
+descriptive_summary <- function(x) {
+  stats <- c(
+    Min = min(x, na.rm = TRUE),
+    `1st Qu.` = quantile(x, probs = 0.25, names = FALSE, na.rm = TRUE),
+    Median = median(x, na.rm = TRUE),
+    Mean = mean(x, na.rm = TRUE),
+    `3rd Qu.` = quantile(x, probs = 0.75, names = FALSE, na.rm = TRUE),
+    Max = max(x, na.rm = TRUE),
+    `NA's` = sum(is.na(x))
+  )
+  return(stats)
+}
+
+numeric_cols <- sapply(airline, is.numeric)
+airline_numeric <- airline[, numeric_cols]
+
+summary_table <- t(sapply(airline_numeric, descriptive_summary))
+
+kable(summary_table) %>%
+  kable_styling(full_width = FALSE, position = "center", bootstrap_options = c("striped", "hover"))
+
+```
+
+While the summary statistics do not show any obvious issues, several  variables contain missing values, "NA". These should be handled appropriately, however,  the dataset is suitable for exploratory data analysis
+
+Satisfaction:
+There is a difference between the two classes, but it is not too extreme. If we look at the ratios, this difference may have an effect during the training of the model, but it is not an extreme imbalance (e.g. 90% - 10%).
+
+Customer.Type:
+Most of the customers are loyal customers. The model can predict satisfaction based on the level of loyalty. Our expectation may be that loyal customers are more satisfied.
+
+Type.of.Travel:
+The majority of the data is from business travelers.
+This can create differences in satisfaction levels, for example, business travelers may be more demanding.
+
+
+Arrival.Delay.in.Minutes: Max: 1,583 minutes.
+Significant delays may have occurred. Delay time is likely to have a negative impact on satisfaction. This variable should be checked for outliers.
+
+
+Service Quality Variables (1-5):
+Example: Food.and.drink, Inflight.entertainment, Cleanliness, Seat.comfort etc.
+Usually the average is around 3. The reviews seem balanced.
+
+```{r}
+cat_vars <- names(airline)[sapply(airline, is.character) | sapply(airline, is.factor)]
+
+cat_summary_list <- lapply(cat_vars, function(var){
+  airline %>%
+    group_by(!!sym(var)) %>%
+    summarise(Count = n()) %>%
+    mutate(Percent = round(100 * Count / sum(Count), 2)) %>%
+    rename(Category = !!sym(var)) %>%
+    mutate(Variable = var)
+})
+
+cat_summary_table <- bind_rows(cat_summary_list) %>%
+  select(Variable, Category, Count, Percent)
+
+cat_summary_table_clean <- cat_summary_table %>%
+  group_by(Variable) %>%
+  mutate(Variable = ifelse(row_number() == 1, Variable, "")) %>%
+  ungroup()
+
+
+cat_summary_table_clean %>%
+  kbl(align = "lccc") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+
+```
+
+
+## Exploratory Data Analysis
+
+**1. What is the relationship between gender and satisfaction?**
+
+```{r}
+overall_satisfaction <- airline %>%
+  group_by(satisfaction) %>%
+  summarise(count = n()) %>%
+  mutate(Percentage = round(100 * count / sum(count), 1),
+         Percentage_label = paste0(Percentage, "%"))
+
+ggplot(overall_satisfaction, aes(x = satisfaction, y = Percentage, fill = satisfaction)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_text(aes(label = Percentage_label),
+            vjust = -0.5, size = 3) +
+  scale_fill_manual(values = c("neutral or dissatisfied" = "red2",
+                               "satisfied" = "dodgerblue")) +
+  labs(title = "Overall Satisfaction Distribution",
+       x = "Satisfaction Level", y = "Percentage (%)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+
+
+gender_analysis <- airline %>%
+  group_by(Gender, satisfaction) %>%
+  summarise(count = n()) %>%
+  mutate(Percentage = round(100 * count / sum(count), 1),
+         Percentage_label = paste0(Percentage, "%"))
+
+ggplot(gender_analysis, aes(x = Gender, y = Percentage, fill = satisfaction)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  geom_text(aes(label = Percentage_label),
+            position = position_dodge(width = 0.9),
+            vjust = -0.3, size = 3.0) +
+  scale_fill_manual(values = c("neutral or dissatisfied" = "red",
+                               "satisfied" = "dodgerblue")) +
+  labs(title = "Satisfaction by Gender",
+       x = "Gender", y = "Percentage (%)", fill = "Satisfaction") +
+  theme_minimal()
+```
+
+When we look at the gender-based satisfaction, we actually see a similar distribution From here, we can say that gender does not have a direct effect on satisfaction. 
+
+
+**2. What is the relationship between type of travel and satisfaction**
+```{r}
+travel_summary <- airline %>%
+  group_by(`Type.of.Travel`, satisfaction) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  mutate(Total = sum(count),
+         Percentage = round(100 * count / Total, 1),
+         label = paste0(Percentage, "%"))
+
+
+ggplot(travel_summary, aes(x = `Type.of.Travel`, y = count, fill = satisfaction)) + #with NA
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = label), 
+            position = position_dodge(width = 0.9), 
+            vjust = -0.3, size = 3) +
+  labs(title = "satisfaction by Type of Travel", y = "Count", x = "Type of Travel") +
+  scale_fill_manual(values = c("neutral or dissatisfied" = "red", "satisfied" = "dodgerblue")) +
+  theme_minimal()
+```
+
+We can see that most of the personal travelers are neutral or dissatisfied. However, we see that the number of satisfied business travelers is higher.
+
+
+**3. What is the relationship between class and satisfaction**
+```{r}
+Class_summary <- airline %>%
+  group_by(Class, satisfaction) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  mutate(Total = sum(count),
+         Percentage = round(100 * count / Total, 1),
+         label = paste0(Percentage, "%"))
+
+
+ggplot(Class_summary, aes(x = Class, y = count, fill = satisfaction)) + #with NA
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = label), 
+            position = position_dodge(width = 0.9), 
+            vjust = -0.3, size = 3) +
+  labs(title = "satisfaction by Type of Class", y = "Count", x = "Class") +
+  scale_fill_manual(values = c("neutral or dissatisfied" = "red", "satisfied" = "dodgerblue")) +
+  theme_minimal()
+```
+
+when we look at this plot, we can see that the majority of business class passengers are satisfield, while the majority of eco class passengers are dissatisfied.
+
+
+**General overview of satisfaction levels based on customer type and class of passenger**
+```{r}
+satisfaction_summary <- airline %>%
+  group_by(Customer.Type, Class, satisfaction) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  mutate(percentage = round(100 * count / sum(count), 1))
+
+satisfaction_summary_wide <- satisfaction_summary %>%
+  pivot_wider(
+    names_from = satisfaction,
+    values_from = c(count, percentage),
+    names_sep = "_"
+  )
+
+
+satisfaction_summary_wide <- satisfaction_summary_wide %>%
+  kbl(caption = "Satis") %>%
+  kable_styling(full_width = FALSE, position = "center")
+
+satisfaction_summary_wide
+
+#plot
+satisfaction_plot_data <- airline %>%
+  group_by(Customer.Type, Class, satisfaction) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  mutate(percentage = round(100 * count / sum(count), 1),
+         label = paste0(percentage, "%"),
+         group = paste("(", Customer.Type, ", ", Class, ")", sep = ""))
+
+
+ggplot(satisfaction_plot_data, aes(x = Customer.Type, y = Class, fill = percentage)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = label), size = 4) +
+  facet_wrap(~ satisfaction) +
+  scale_fill_gradient(low = "white", high = "purple") +
+  labs(
+    title = "Satisfaction Distribution by Customer Type and Class",
+    x = "Customer Type",
+    y = "Class",
+    fill = "Percentage"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+This graph shows the satisfaction level according to customer type and flight class.  We can see that the majority of neutral or dissatisfied passengers are loyal customers  flying in eco class. We can also see that the majority of satisfied passengers are loyal  customers flying in business class. From here, we can actually say that flight class has a  very big effect on satisfaction. At the same time, we can say that disloyal customers are  generally dissatisfied for each flight class.
+
+
+**General overview of satisfaction levels based on travel type and class of passenger.**
+```{r}
+satisfaction_summary <- airline %>%
+  group_by(Type.of.Travel, Class, satisfaction) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  mutate(percentage = round(100 * count / sum(count), 1))
+
+satisfaction_summary_wide <- satisfaction_summary %>%
+  pivot_wider(
+    names_from = satisfaction,
+    values_from = c(count, percentage),
+    names_sep = "_"
+  )
+
+satisfaction_summary_wide <- satisfaction_summary_wide %>%
+  kbl(caption = "Satis") %>%
+  kable_styling(full_width = FALSE, position = "center")
+
+satisfaction_summary_wide
+
+#plot
+
+satisfaction_plot_data <- airline %>%
+  group_by(Type.of.Travel, Class, satisfaction) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  mutate(percentage = round(100 * count / sum(count), 1),
+         label = paste0(percentage, "%"),
+         group = paste("(", Type.of.Travel, ", ", Class, ")", sep = ""))
+
+
+ggplot(satisfaction_plot_data, aes(x = Type.of.Travel, y = Class, fill = percentage)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = label), size = 4) +
+  facet_wrap(~ satisfaction) +
+  scale_fill_gradient(low = "white", high = "purple") +
+  labs(
+    title = "Satisfaction Distribution by Type of Travel and Class",
+    x = "Type of Travel",
+    y = "Class",
+    fill = "Percentage"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+This graph shows the satisfaction percentages according to the type of travel and the  flight class. We can say that the majority of the neutral or dissatisfied passengers are  those flying in eco class and those traveling individually. Similarly, we can say that the  majority of the satisfied passengers are those flying in business class and those traveling  for business. From here, we can say that both the flight class and the type of travel are  important factors in satisfaction.
+
+
+**4 What is the relationship between Infligt.entertainment and satisfaction. Also, satisfaction percantages based on gender, customer type, and ratings of Inflight.entertainment?**
+```{r}
+ggplot(airline, aes(x = satisfaction, y = Inflight.entertainment, fill = satisfaction)) + 
+  geom_boxplot() + 
+  labs(title = "Boxplot of Infligt Entertainment by Satisfaction",
+       x = "Satisfaction",
+       y = "Inflight Entertainment") + 
+  theme_minimal()
+```
+
+This boxplot shows the distribution of the variable "Inflight.entertainment" according to customer satisfaction.
+
+For the "Neutral or dissatisfied" group, Inflight.entertainment is lower and more variable. The median is around 3.
+There is a wide spread between the lower and upper quartiles (IQR). This may indicate that there are different perceptions among users. Some data is quite low.
+
+For the "Satisfied" group, Inflight.entertainment scores seem higher and more stable. The median is very close to 5, meaning most people rated Inflight.entertainment very well. Also, the box is narrow, meaning the data spread is small, indicating that the evaluations are consistent. There are few outliers with low scores (e.g. around 2).
+
+As a result, there seems to be a positive relationship between Inflight.entertainment and customer satisfaction.
+Satisfied customers give high scores to Inflight.entertainment, while dissatisfied give lower and more variable scores.
+This shows that investing in seat comfort can be effective in increasing customer satisfaction.
+
+
+```{r}
+ie_sum <- airline %>% #with NA 
+  group_by(Gender, Customer.Type, Inflight.entertainment) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  mutate(percentage = round(100 * count / sum(count), 1)) 
+
+ie_summary_wide <- ie_sum %>%
+  pivot_wider(
+    names_from = Inflight.entertainment,
+    values_from = c(count, percentage),
+    names_sep = "_"
+  )
+
+ie_summary_wide <- ie_summary_wide %>%
+  kbl(caption = "Inflight entertainment by Gender and Customer Type") %>%
+  kable_styling(full_width = FALSE, position = "center")
+
+ie_summary_wide
+
+#plot
+
+ie_sum <- airline %>% #with NA 
+  group_by(Gender, Customer.Type, Inflight.entertainment) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  mutate(percentage = round(100 * count / sum(count), 1),
+         label = paste0(percentage, "%"),
+         group = paste(Gender, Customer.Type, sep = " - ")) 
+
+ggplot(ie_sum, aes(x = group, y = count, fill = as.factor(Inflight.entertainment))) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  geom_text(aes(label = label), 
+            position = position_dodge(width = 0.9),
+            vjust = -0.5, size = 2) +
+  labs(
+    title = "Inflight entertainment Ratings by Gender and Customer Type",
+    x = "Gender - Customer Type",
+    y = "Count",
+    fill = "Inflight entertainment"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+This graph shows the satisfaction level according to gender, customer type and the points  given to Inflight.entertainment. The numbers on the left represent numbers and the numbers on the  right represent percentages. We can say that the distributions are actually similar according to customer type. From here, we can see that gender does not have a direct effect on Inflight.entertainment.
+
+
+**5. How does customer satisfaction vary across different age segments?**
+```{r}
+hist(airline$Age,probability = TRUE, breaks = "Scott", xlim = c(0,80), ylim = c(0,0.030),
+     col = "dodgerblue", border = "white", main = "Age Distribution of Passengers",xlab = "Age")
+
+lines(density(airline$Age, na.rm = TRUE), col = "blue", lwd = 2)
+```
+
+My graph here shows that the ages of the passengers are not normally distributed. That's why I divided the passenger ages into 4 groups by looking at their quartiles.
+
+
+```{r}
+airline_age_grouped <- airline %>%
+  mutate(AgeGroup = cut(Age,
+                        breaks = c(0, 24, 45, 55, 90),
+                        labels = c("[0, 24)", "[24, 45)", "[45, 55)", "[55, 90]"),
+                        right = FALSE))
+
+age_group_summary <- airline_age_grouped %>%
+  group_by(AgeGroup, satisfaction) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  mutate(percentage = round(100 * count / sum(count), 1),
+         label = paste0(percentage, "%"))
+
+
+ggplot(age_group_summary, aes(x = AgeGroup, y = count, fill = satisfaction)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  geom_text(aes(label = label), 
+            position = position_dodge(width = 0.9),
+            vjust = -0.3, size = 3.5) +
+  labs(
+    title = "Satisfaction based on Age Groups",
+    x = "Age Group",
+    y = "Count",
+    fill = "Satisfaction"
+  ) +
+  scale_fill_manual(values = c(
+    "neutral or dissatisfied" = "red",
+    "satisfied" = "dodgerblue"
+  )) +
+  theme_minimal()
+```
+
+This graph also shows the satisfaction of the age groups we divided. Here, we can say that  the majority of the customers between the ages of 45 and 55 are satisfied, while the majority of the other age groups are dissatisfied passengers.
+
+
+**6. Is there a significant difference in satisfaction ratings across different airline service categories?**
+```{r}
+str(airline)
+
+service_variables <- airline %>%
+  select(where(is.integer))
+
+service_variables$Age <- NULL
+service_variables$Flight.Distance <- NULL
+service_variables$Arrival.Delay.in.Minutes <- NULL
+service_variables$Departure.Delay.in.Minutes <- NULL
+
+service_variables <- colnames(service_variables)
+
+long_data <- airline %>%
+  select(all_of(service_variables)) %>%
+  pivot_longer(cols = everything(), names_to = "Service", values_to = "Rating") %>%
+  filter(!is.na(Rating)) #for ANOVA test in CDA
+
+services <- airline %>%
+  select(all_of(service_variables)) %>%
+  pivot_longer(cols = everything(), names_to = "Service", values_to = "Rating") %>%
+  group_by(Service) %>%
+  summarise(Average = round(mean(Rating, na.rm = TRUE), 1)) %>%
+  arrange(Average)
+
+
+ggplot(services, aes(x = Average, y = reorder(Service, Average))) +
+  geom_col(fill = "orchid", alpha = 0.7) +
+  geom_text(aes(label = Average), hjust = -0.2, size = 3) +
+  labs(
+    title = "Average Satisfaction Ratings of Services",
+    x = "",
+    y = "Service"
+  ) +
+  theme_minimal() +
+  xlim(0, 5)
+```
+
+When we look at the average service scores, Baggage.handling and inflight service have  the highest score with 3.6. At the same time, infligt wifi service has the lowest score  with 2.7.
+
+
+**7.What aspects of airline services have the greatest impact on how satisfied passengers feel overall?"**
+```{r}
+airline_satis1 <- airline %>%
+  mutate(satisfaction_numeric = ifelse(satisfaction == "satisfied", 1, 0))
+
+numeric_variables <- airline_satis1 %>%
+  select(where(is.numeric))
+
+cor_matrix <- cor(numeric_variables, use = "complete.obs")
+
+cor_satisfaction <- cor_matrix[, "satisfaction_numeric"]
+
+cor_df <- data.frame(
+  Variable = names(cor_satisfaction),
+  Correlation = cor_satisfaction
+) %>%
+  filter(Variable != "satisfaction_numeric") %>%  
+  mutate(AbsCorrelation = abs(Correlation)) 
+
+ggplot(cor_df, aes(x = Correlation, y = reorder(Variable, Correlation), fill = Correlation > 0)) +
+  geom_col() +
+  geom_text(aes(label = round(Correlation, 2)),
+            hjust = ifelse(cor_df$Correlation > 0, -0.1, 1.1),
+            size = 3) +
+  scale_fill_manual(values = c("TRUE" = "dodgerblue", "FALSE" = "red")) +
+  labs(
+    title = "Correlation with Satisfaction",
+    x = "Correlation",
+    y = "Variable",
+    fill = "Direction"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+```
+
+Here in the first graph I gladly examined the correlation of all variables. And I saw that  online boarding was the variable with the highest correlation in general. This shows that improvements in customer-oriented services can make a bigger difference in satisfaction.
+
+
+```{r}
+cor_online_boarding <- cor_matrix[, "Online.boarding"]
+
+cor_df <- data.frame(
+  Variable = names(cor_online_boarding),
+  Correlation = cor_online_boarding
+) %>%
+  filter(!Variable %in% c("Online.boarding", "satisfaction_numeric")) %>%  
+  mutate(AbsCorrelation = abs(Correlation)) 
+
+ggplot(cor_df, aes(x = Correlation, y = reorder(Variable, Correlation), fill = Correlation > 0)) +
+  geom_col() +
+  geom_text(aes(label = round(Correlation, 2)),
+            hjust = ifelse(cor_df$Correlation > 0, -0.1, 1.1),
+            size = 3) +
+  scale_fill_manual(values = c("TRUE" = "dodgerblue", "FALSE" = "red")) +
+  labs(
+    title = "Correlation with Online Boarding Service",
+    x = "Correlation",
+    y = "Variable",
+    fill = "Direction"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+```
+
+So in my second graph I looked at the correlation of all my other variables with online  boarding. And inflight wifi service is the variable with the highest correlation with  online boarding.
+
+
+```{r}
+ggplot(airline, aes(x = as.factor(Inflight.wifi.service), y = Online.boarding, fill = as.factor(Inflight.wifi.service))) +
+  geom_boxplot() +
+  labs(
+    title = "Online Boarding vs Inflight Wifi Service",
+    x = "Inflight wifi service",
+    y = "Online boarding"
+  ) +
+  theme_minimal()
+```
+
+When I wanted to show their relationship through a third box plot graph, I saw that as  the inflight wifi service score increased, the distribution area of the online boarding  service decreased and its score increased. From here I can say that passengers who received  a better inflight wifi service tended to give a higher score to the online boarding service.
+
+
+## MISSINGNESS MECHANISM
+
+```{r}
+
+missmap(airline, main = "Missing Data Map", col = c("gold", "black"))
+
+
+airline_full <- airline
+
+init = mice(airline_full, maxit = 0, printFlag = FALSE)
+default_methods = init$method
+default_predMat = init$predictorMatrix
+
+# View the default methods for each column
+print(default_methods)
+# For binary factors, use logistic regression ("logreg")
+# For factors with > 2 levels, use polytomous regression ("polyreg")
+# For numeric variables, use predictive mean matching ("pmm")
+
+airline_imputed <- mice(airline_full, m = 5, method = default_methods, maxit = 3, seed = 123)
+
+airline_data <- complete(airline_imputed, 1)
+
+dim(airline_data)
+sum(is.na(airline_data))
+str(airline_data)
+summary(airline_data) # so, our imputed data is airline_data
+```
+
+This method provides a very robust approach to complete missing data with modeling-based methods. Thanks to the mice package, the gaps in the data are filled in a statistically consistent manner and more reliable data is obtained for analysis.
+
+
+## FEATURE SELECTION
+
+**1. We have already dropped meaningless columns such as customer id.**
+
+**2 We dropped the columns with high correlations between them.**
+```{r}
+airline_numeric_data <- airline_data %>%
+  select(where(is.numeric))
+
+cor_matrix <- cor(airline_numeric_data) 
+
+ggcorrplot(cor_matrix, hc.order = TRUE, type = "upper", lab = TRUE, lab_size = 3,
+           tl.cex = 10)
+```
+
+Correlation with between Departure.Delay.in.Minutes and	Arrival.Delay.in.Minutes is 0.97
+Correlation with between Inflight.wifi.service and	Ease of online booking is 0.72
+
+
+```{r}
+high_corr_indeks <- findCorrelation(cor_matrix, cutoff = 0.7)
+colnames(cor_matrix)[high_corr_indeks] 
+```
+
+in this situation, we remove the Departure.Delay.in.Minutes and Inflight.wifi.service from dataset because of their correlation is high.
+
+
+```{r}
+airline_rdata<- airline_data %>%
+  select(-Departure.Delay.in.Minutes, -Inflight.wifi.service)
+
+airline_numeric_rdata <- airline_rdata %>%
+  select(where(is.numeric))
+
+cor_matrix <- cor(airline_numeric_rdata) 
+
+ggcorrplot(cor_matrix, hc.order = TRUE, type = "upper", lab = TRUE, lab_size = 3,
+           tl.cex = 10)
+
+high_corr_indeks <- findCorrelation(cor_matrix, cutoff = 0.7)
+colnames(cor_matrix)[high_corr_indeks]
+```
+
+There is no correlation above 70% between any pair of variables in the data set. In other words, there is no high risk of multicollinearity between the variables.
+
+
+**3.Normallity,  if not normal, apply transform log,square,box cox
+```{r}
+sapply(airline_numeric_rdata, skewness)
+```
+
+logaritmik transformation applied for right skewness distributon of variables x^2 transformation applied for left skewness distribution of variables and finally box-cox transformation applied but After these three transformations, when I applied the Shapiro test, I saw that it  was still not normally distributed, so I continue to use the data without using an transformation. But in the last part, in the scaling part, we want all the variables of the model to contribute equally. So we make them equal to a certain range. After, we use the minmax scaler.
+
+
+## DETECTION OUTLIERS
+
+```{r}
+airline_rodata <- airline_rdata
+
+airline_numeric_rodata <- airline_rodata %>%
+  select(where(is.numeric))
+
+lof_scores <- lof(airline_numeric_rodata, minPts = 11)
+
+head(lof_scores)
+
+airline_rodata$LOF_score <- lof_scores
+
+threshold <- 1.5
+
+outliers <- airline_rodata[lof_scores > threshold, ]
+dim(outliers)
+
+airline_rodata$outlier <- ifelse(lof_scores > threshold, "Outlier", "Inlier")
+
+ggplot(airline_rodata, aes(x = Flight.Distance, y = Age, color = outlier)) +
+  geom_point() +
+  scale_color_manual(values = c("dodgerblue", "red")) +
+  theme_minimal() +
+  labs(title = "Outlier Detection with LOF")
+
+airline_predata <- airline_rodata %>% 
+  filter(outlier == "Inlier") %>% 
+  select(-LOF_score, -outlier)
+```
+
+This process is performed to ensure that the data used in the analysis produces more consistent and meaningful results. Density-based approaches such as LOF are particularly useful in identifying unusual values ​​that cannot be detected by ordinary methods, especially in complex data sets containing many variables. Cleaning such outliers helps the models established in the later stages to produce more reliable results.
+So, we have 238 outlier, and we dropped from the dataset.
+
+
+## ENCODING
+
+```{r}
+str(airline_predata)
+
+airline_preprocdata <- airline_predata
+
+# Ordinal encode
+airline_preprocdata$Class <- dplyr::recode(airline_preprocdata$Class, "Eco" = 0, "Eco Plus" = 1, "Business" = 2)
+
+# Binary encode
+airline_preprocdata$satisfaction <- ifelse(airline_preprocdata$satisfaction == "satisfied", 1, 0)
+
+# One-hot encode
+airline_preprocdata <- dummy_cols(airline_preprocdata,
+                                  select_columns = c("Gender", "Customer.Type", "Type.of.Travel"),
+                                  remove_first_dummy = TRUE,
+                                  remove_selected_columns = TRUE)
+
+
+str(airline_preprocdata)
+```
+
+In the encoding section, we need to convert categorical variables to numerical format. I converted them with appropriate transformations.
+
+
+##MinMax Scaling
+
+```{r}
+# custom function to implement min max scaling
+MinMax <- function(x) {
+  (x - min(x)) / (max(x) - min(x))
+}
+
+#normalise data using custom function
+airline_preproccesseddata <- as.data.frame(lapply(airline_preprocdata, MinMax))
+```
+
+
+
+## Confirmatory Data Analysis
+
+**1. What is the relationship between gender and satisfaction?**
+
+Before this analysis, the variables were evaluated in their labeled forms and converted into numerical form during the modeling phase.
+
+```{r}
+table(airline_predata$Gender, airline_predata$satisfaction) 
+chisq.test(airline_predata$Gender, airline_predata$satisfaction) 
+```
+
+since p<0.05 There is a statistically significant relationship between gender and satisfaction.
+
+
+```{r}
+table(airline_preproccesseddata$Gender_Male, airline_preproccesseddata$satisfaction) #after encoding
+chisq.test(airline_preproccesseddata$Gender_Male, airline_preproccesseddata$satisfaction) #same results check
+```
+
+```{r}
+#for table
+chisq_result <- chisq.test(airline_predata$Gender, airline_predata$satisfaction)
+
+chi_table <- data.frame(
+  `Test` = "Chi-squared Test",
+  `X-squared` = round(chisq_result$statistic, 3),
+  `df` = chisq_result$parameter,
+  `p-value` = format.pval(chisq_result$p.value, digits = 4, scientific = TRUE)
+)
+
+kable(chi_table, caption = "Chi-squared Test Result for Gender and Satisfaction") %>%
+  kable_styling(full_width = F, position = "center")
+```
+
+When the test is performed with the data after encoding, the results are the same, which also shows that the encoding process was done correctly.
+
+
+**2. What is the relationship between type of travel and satisfaction?**
+```{r}
+table(airline_predata$Type.of.Travel, airline_predata$satisfaction)
+chisq.test(airline_predata$Type.of.Travel, airline_predata$satisfaction)
+```
+
+since p<0.05 There is a statistically significant relationship between Type.of.Travel and satisfaction.
+
+```{r}
+#for table
+chisq_result <- chisq.test(airline_predata$Type.of.Travel, airline_predata$satisfaction)
+
+chi_table <- data.frame(
+  `Test` = "Chi-squared Test",
+  `X-squared` = round(chisq_result$statistic, 3),
+  `df` = chisq_result$parameter,
+  `p-value` = format.pval(chisq_result$p.value, digits = 4, scientific = TRUE)
+)
+
+kable(chi_table, caption = "Chi-squared Test Result for Type of Travel and Satisfaction") %>%
+  kable_styling(full_width = FALSE, position = "center")
+```
+
+
+**3. What is the relationship between class and satisfaction?**
+```{r}
+table(airline_predata$Class, airline_predata$satisfaction)
+chisq.test(airline_predata$Class, airline_predata$satisfaction)
+```
+
+since p<0.05 There is a statistically significant relationship between class and satisfaction.
+
+```{r}
+#for table
+chisq_result_class <- chisq.test(airline_predata$Class, airline_predata$satisfaction)
+
+chi_table_class <- data.frame(
+  `Test` = "Chi-squared Test",
+  `X-squared` = round(chisq_result_class$statistic, 3),
+  `df` = chisq_result_class$parameter,
+  `p-value` = format.pval(chisq_result_class$p.value, digits = 4, scientific = TRUE)
+)
+
+kable(chi_table_class, caption = "Chi-squared Test Result for Class and Satisfaction") %>%
+  kable_styling(full_width = FALSE, position = "center")
+```
+
+**4 What is the relationship between seat.comfort and satisfaction. Also, satisfaction percantages based on gender, customer type, and ratings of Seat.comfort?**
+
+```{r}
+ad.test(airline_predata$Inflight.entertainment)
+```
+
+As a result of the Anderson-Darling test, it was seen that the Seat.comfort variable was not normally distributed (p < 0.05). Therefore, the Wilcoxon Rank-Sum Test (Mann-Whitney U test), which is a nonparametric method, should be used.
+
+```{r}
+wilcox.test(Inflight.entertainment ~ satisfaction, data=airline_predata)
+```
+
+Since the Wilcoxon test result was p < 0.05, H0 was rejected. In other words, there is a statistically significant difference between the seat comfort scores of satisfied and unsatisfied passengers. This shows that seat comfort is an important factor affecting customer satisfaction.
+
+```{r}
+#for table
+wilcox_result <- wilcox.test(Inflight.entertainment ~ satisfaction, data = airline_predata)
+
+wilcox_table <- data.frame(
+  `Test` = "Wilcoxon Rank Sum Test",
+  `W Statistic` = round(wilcox_result$statistic, 0),
+  `p-value` = format.pval(wilcox_result$p.value, digits = 4, scientific = TRUE)
+)
+
+kable(wilcox_table, caption = "Wilcoxon Test Result for Inflight Entertainment and Satisfaction") %>%
+  kable_styling(full_width = FALSE, position = "center")
+```
+
+**5. How does customer satisfaction vary across different age segments?**
+
+```{r}
+airline_age_grouped <- airline_predata %>%
+  mutate(AgeGroup = cut(Age,
+                        breaks = c(0, 24, 45, 55, 90),
+                        labels = c("[0, 24)", "[24, 45)", "[45, 55)", "[55, 90]"),
+                        right = FALSE))
+
+age_satisfaction_table <- table(airline_age_grouped$AgeGroup, airline_age_grouped$satisfaction)
+chisq.test(age_satisfaction_table)
+```
+
+
+```{r}
+#for table
+chisq_result_age <- chisq.test(age_satisfaction_table)
+
+chi_table_age <- data.frame(
+  `Test` = "Chi-squared Test",
+  `X-squared` = round(chisq_result_age$statistic, 1),
+  `df` = chisq_result_age$parameter,
+  `p-value` = format.pval(chisq_result_age$p.value, digits = 4, scientific = TRUE)
+)
+
+kable(chi_table_age, caption = "Chi-squared Test Result for Age Group and Satisfaction") %>%
+  kable_styling(full_width = FALSE, position = "center")
+```
+
+According to the chi-square test, there is a statistically significant relationship between
+age group and passenger satisfaction.
+
+```{r}
+ad.test(airline_predata$Seat.comfort)
+```
+
+**6. Is there a significant difference in satisfaction ratings across different airline service categories?**
+```{r}
+service_variables <- airline_predata %>%
+  select(where(is.integer))
+
+service_variables$Age <- NULL
+service_variables$Flight.Distance <- NULL
+service_variables$Arrival.Delay.in.Minutes <- NULL
+service_variables$Departure.Delay.in.Minutes <- NULL
+
+service_variables <- colnames(service_variables)
+
+long_data <- airline_predata %>%
+  select(all_of(service_variables)) %>%
+  pivot_longer(cols = everything(), names_to = "Service", values_to = "Rating") %>%
+  filter(!is.na(Rating)) #for ANOVA test in CDA
+
+anova_res <- aov(Rating ~ Service, data = long_data)
+summary(anova_res)
+```
+
+Since p< 0.05, H0 is rejected. So,  there is a significant difference between groups. In other words, there are statistically significant differences between the scores given by passengers for different service items.
+
+
+Post-hoc test (Tukey HSD)
+```{r}
+tukey_res <- TukeyHSD(anova_res)
+tukey_res_df <- as.data.frame(tukey_res$Service)
+p_adj_values <- tukey_res_df$`p adj`
+names(p_adj_values) <- rownames(tukey_res_df)
+print(p_adj_values)
+```
+
+```{r}
+tukey_res <- TukeyHSD(anova_res)
+tukey_df <- as.data.frame(tukey_res$Service)
+tukey_df$comparison <- rownames(tukey_df)
+
+tukey_df <- tukey_df %>%
+  separate(comparison, into = c("Service1", "Service2"), sep = "-")
+
+if (any(is.na(tukey_df$Service1)) || any(is.na(tukey_df$Service2))) {
+  warning("Some service comparisons could not be separated correctly.")
+}
+
+pval_matrix <- tukey_df %>%
+  select(Service1, Service2, `p adj`) %>%
+  pivot_wider(names_from = Service2, values_from = `p adj`)
+
+pval_matrix <- melt(pval_matrix, id.vars = "Service1", variable.name = "Service2", value.name = "p_adj")
+
+pval_matrix <- pval_matrix %>%
+  mutate(p_adj = ifelse(p_adj == 0, 1e-10, p_adj),
+         log_p = -log10(p_adj))
+
+reverse_pairs <- pval_matrix %>%
+  rename(Service1 = Service2, Service2 = Service1)
+
+full_matrix <- bind_rows(pval_matrix, reverse_pairs)
+
+
+ggplot(full_matrix, aes(x = Service1, y = Service2, fill = log_p)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(p_adj, 3)), size = 2.5) +
+  scale_fill_gradient(low = "white", high = "red", name = "-log10(p)", na.value = "grey90") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+        axis.text.y = element_text(size = 8)) +
+  labs(title = "Service Comparison Heatmap (Tukey HSD)",
+       x = "Service 1", y = "Service 2")
+```
+
+One-way ANOVA test showed that passenger ratings differed significantly between different service categories.
+
+We conducted Tukey HSD post-hoc analysis to determine which services differed from each other. The results revealed that most service pairs had statistically significant differences in ratings (corrected p < 0.05). For example, Seat Comfort was rated significantly higher than Gate Location and In-Flight Entertainment received better ratings than Online Booking. These findings highlight that passengers place greater value on aspects directly related to the in-flight experience and comfort.
+
+On the other hand, there was no significant difference between In-Flight Service and Baggage Handling (p = 0.90) or Leg Room and In-Flight Entertainment (p = 0.98), indicating that passengers viewed these services similarly in terms of satisfaction.
+
+Overall, the results suggest that passengers are more responsive to in-flight comfort-related services, while logistics or back-end services such as baggage handling tend to have less impact on overall satisfaction.
+
+## Data preprocessing was conducted in R, and the resulting dataset modified_data will be used for modeling in Python.
+
+After the data preprocessing steps, the resulting dataset, named modified_data, is clean, free of missing values, adjusted for outliers, and includes only the most relevant features. All categorical variables have been encoded properly, and therefore modified_data is strictly numerical and ready for modeling or analysis. The form prepared aims to provide better and more accurate results in the coming stages.
+
+```{r}
+write.csv(airline_preproccesseddata, "modified_data.csv", row.names = FALSE)# for this part, in python
+
+airline_modified <- read.csv("modified_data.csv", header = TRUE)
+```
+
+```{r}
+sum(is.na(airline_modified))
+```
+
+```{r}
+sum(duplicated(airline_modified))
+```
+
+```{r}
+str(airline_modified)
+```
+
+
+
+## Cross-validation, train-test split using simple validation set approach
+
+The logistic regression model was applied in R using the preprocessed dataset modified_data(airline_preproccesseddata).
+
+```{r}
+set.seed(412)
+
+random_sample <- createDataPartition(airline_preproccesseddata$satisfaction, p = 0.8, list = FALSE)
+train_data <- airline_preproccesseddata[random_sample, ]
+test_data <- airline_preproccesseddata[-random_sample, ]
+```
+
+This code splits the dataset into training and testing sets.
+
+
+## MODELLING
+
+
+**1. Logistic Regression** 
+```{r}
+fit_full_logistic <- glm(satisfaction ~ .,
+                         data = train_data,
+                         family = "binomial")
+
+vif(fit_full_logistic)
+
+summary(fit_full_logistic)
+# we removed Flight.Distance ve Food.and.drink
+
+fit_logistic <- glm(satisfaction ~ . -Flight.Distance -Food.and.drink,
+                    data = train_data,
+                    family = "binomial")
+
+
+vif(fit_logistic)
+
+summary(fit_logistic)
+```
+
+Logistic regression model was successfully applied for satisfaction prediction. Among the variables found to be significant in the model, factors such as seat comfort, ease of online boarding, in-flight service quality and cleanliness stood out. Delays, loyalty status and travel purpose negatively affect satisfaction. There is no multicollinearity in the model  (all VIF < 5). Flight.Distance and Food.and.drink variables were  not found to be significant and were removed from the model.
+
+
+```{r}
+train_pred <- predict(fit_logistic, newdata = train_data, type = "response")
+train_class <- ifelse(train_pred > 0.5, 1, 0)
+
+test_pred <- predict(fit_logistic, newdata = test_data, type = "response")
+test_class <- ifelse(test_pred > 0.5, 1, 0)
+
+cm_train <- confusionMatrix(as.factor(train_class), as.factor(train_data$satisfaction))
+cm_test <- confusionMatrix(as.factor(test_class), as.factor(test_data$satisfaction))
+
+print(cm_train)
+print(cm_test)
+
+performance_summary <- tibble(
+  Metric = c("Accuracy", "Kappa", "Sensitivity", "Specificity"),
+  Train = c(
+    round(cm_train$overall["Accuracy"], 3),
+    round(cm_train$overall["Kappa"], 3),
+    round(cm_train$byClass["Sensitivity"], 3),
+    round(cm_train$byClass["Specificity"], 3)
+  ),
+  Test = c(
+    round(cm_test$overall["Accuracy"], 3),
+    round(cm_test$overall["Kappa"], 3),
+    round(cm_test$byClass["Sensitivity"], 3),
+    round(cm_test$byClass["Specificity"], 3)
+  )
+)
+
+performance_summary %>%
+  gt() %>%
+  tab_header(title = "Model Performance Summary (Train vs Test)")
+```
+
+The model achieved 86.9% accuracy on training data and 86.6% accuracy on test data. Training and test performances are very close to each other, indicating that the model  is generalizable and does not overfit. Sensitivity (90%) and selectivity (82%) are balanced. Dissatisfied passengers are predicted with high accuracy. Kappa coefficient is in the range of 0.72-0.73, indicating that the model performs much better than random success.
+
+
+Also, Then I will use these models like Random Forest, XGBOST, Decision Tree, KNN by Python
